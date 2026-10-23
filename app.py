@@ -1,6 +1,7 @@
-"""Sunrise Resort booking server (Flask + SQLite).
+"""Yellamalai O'Valley Resort booking server (Flask + Neon PostgreSQL).
 
 Run:  pip install -r requirements.txt
+      DATABASE_URL='postgresql://...neon.tech/neondb?sslmode=require' \
       OWNER_PIN=4321 STAFF_PIN=1111 SECRET_KEY=any-long-text python app.py
 Open: http://localhost:5000
 """
@@ -8,19 +9,38 @@ import json
 import os
 import re
 import secrets
-import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
+from urllib.parse import urlsplit
 
+import psycopg2
+from psycopg2.extras import Json, RealDictCursor
+from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory, session
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE, "resort.db")
+load_dotenv(os.path.join(BASE, ".env"))
 
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is missing. Add your PostgreSQL connection string to the .env file."
+    )
+if urlsplit(DATABASE_URL).scheme not in {"postgres", "postgresql"}:
+    raise RuntimeError(
+        "DATABASE_URL must be a PostgreSQL connection string. In Neon Console, open "
+        "Connect and copy the pooled connection string (postgresql://...), not the "
+        "HTTPS Data API URL."
+    )
+
+
+DEFAULT_NAME = "Yellamalai O'Valley Resort"
 OWNER_PIN = os.environ.get("OWNER_PIN", "1234")
 STAFF_PIN = os.environ.get("STAFF_PIN", "1111")
 # What the Staff role may do. The Owner can always do everything.
-STAFF_CAN = {"editAmount": False, "recordPayment": True, "cancel": False, "reports": False}
-OWNER_CAN = {"editAmount": True, "recordPayment": True, "cancel": True, "reports": True}
+# editName = change the resort name (set True to let Staff do it too).
+STAFF_CAN = {"editAmount": False, "recordPayment": True, "cancel": False, "reports": False, "editName": False}
+OWNER_CAN = {"editAmount": True, "recordPayment": True, "cancel": True, "reports": True, "editName": True}
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret-key")
@@ -28,31 +48,35 @@ ROOMS = ["R101", "R102", "R103", "R104"]
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+@contextmanager
 def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """One short-lived connection per request (best for Neon's pooled endpoint).
+    Commits on success, rolls back on error."""
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=15)
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                yield cur
+    finally:
+        conn.close()
 
 
 def init_db():
+    with open(os.path.join(BASE, "neon_schema.sql"), encoding="utf-8") as f:
+        sql = f.read()
     with db() as c:
-        c.execute("""CREATE TABLE IF NOT EXISTS bookings (
-            id TEXT PRIMARY KEY, booking_date TEXT, guest TEXT, phone TEXT,
-            room TEXT, check_in TEXT, check_out TEXT, amount REAL, advance REAL,
-            source TEXT, status TEXT, log TEXT DEFAULT '[]')""")
-        cols = [r[1] for r in c.execute("PRAGMA table_info(bookings)")]
-        if "trekking" not in cols:  # add-on column for existing databases
-            c.execute("ALTER TABLE bookings ADD COLUMN trekking INTEGER DEFAULT 0")
-        c.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
-        c.execute("INSERT OR IGNORE INTO settings VALUES ('resort_name', 'Sunrise Resort')")
+        c.execute(sql)
 
 
 def row_to_json(r):
+    log = r["log"]
+    if isinstance(log, str):
+        log = json.loads(log or "[]")
     return {
-        "id": r["id"], "bookingDate": r["booking_date"], "guest": r["guest"],
-        "phone": r["phone"], "room": r["room"], "checkIn": r["check_in"],
-        "checkOut": r["check_out"], "amount": r["amount"], "advance": r["advance"],
-        "source": r["source"], "status": r["status"], "trekking": bool(r["trekking"]), "log": json.loads(r["log"] or "[]"),
+        "id": r["id"], "bookingDate": str(r["booking_date"]), "guest": r["guest"],
+        "phone": r["phone"], "room": r["room"], "checkIn": str(r["check_in"]),
+        "checkOut": str(r["check_out"]), "amount": float(r["amount"]), "advance": float(r["advance"]),
+        "source": r["source"], "status": r["status"], "trekking": bool(r["trekking"]), "log": log or [],
     }
 
 
@@ -112,8 +136,9 @@ def me():
 
 def read_settings():
     with db() as c:
-        rows = dict(c.execute("SELECT key, value FROM settings").fetchall())
-    return {"resort_name": rows.get("resort_name", "Sunrise Resort"),
+        c.execute("SELECT key, value FROM settings")
+        rows = {r["key"]: r["value"] for r in c.fetchall()}
+    return {"resort_name": rows.get("resort_name", DEFAULT_NAME),
             "room_rates": json.loads(rows.get("room_rates", "{}"))}
 
 
@@ -124,26 +149,33 @@ def get_settings():
 
 @app.put("/api/settings")
 def put_settings():
-    if session.get("role") != "Owner":
-        return err("Only the owner can change settings.", 403)
     d = request.get_json(silent=True) or {}
+    name, rates = None, None
+    if "resort_name" in d:
+        if not allowed("editName"):
+            return err("You are not allowed to change the resort name.", 403)
+        name = str(d["resort_name"]).strip()[:60]
+        if not name:
+            return err("Enter a resort name.")
+    if "room_rates" in d:
+        if session.get("role") != "Owner":
+            return err("Only the owner can change rates.", 403)
+        rates = {}
+        try:
+            for k, v in dict(d["room_rates"]).items():
+                v = float(v or 0)
+                if v < 0:
+                    return err("Room rates cannot be negative.")
+                rates[str(k)[:30]] = v
+        except (TypeError, ValueError):
+            return err("Room rates must be numbers.")
     with db() as c:
-        if "resort_name" in d:
-            name = str(d["resort_name"]).strip()[:60]
-            if not name:
-                return err("Enter a resort name.")
-            c.execute("UPDATE settings SET value=? WHERE key='resort_name'", (name,))
-        if "room_rates" in d:
-            rates = {}
-            try:
-                for k, v in dict(d["room_rates"]).items():
-                    v = float(v or 0)
-                    if v < 0:
-                        return err("Room rates cannot be negative.")
-                    rates[str(k)[:30]] = v
-            except (TypeError, ValueError):
-                return err("Room rates must be numbers.")
-            c.execute("INSERT OR REPLACE INTO settings VALUES ('room_rates', ?)", (json.dumps(rates),))
+        if name is not None:
+            c.execute("INSERT INTO settings (key, value) VALUES ('resort_name', %s) "
+                      "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (name,))
+        if rates is not None:
+            c.execute("INSERT INTO settings (key, value) VALUES ('room_rates', %s) "
+                      "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (json.dumps(rates),))
     return jsonify(read_settings())
 
 
@@ -152,7 +184,8 @@ def list_bookings():
     if not session.get("role"):
         return err("Sign in first.", 401)
     with db() as c:
-        rows = c.execute("SELECT * FROM bookings ORDER BY rowid").fetchall()
+        c.execute("SELECT * FROM bookings ORDER BY seq")
+        rows = c.fetchall()
     return jsonify({"bookings": [row_to_json(r) for r in rows]})
 
 
@@ -182,18 +215,21 @@ def add_booking():
     if amount < 0 or advance < 0 or amount + advance <= 0:
         return err("Check the amount and advance.")
     with db() as c:
+        c.execute("SELECT pg_advisory_xact_lock(727001)")  # stops two phones double-booking at once
+        c.execute("SELECT room FROM bookings WHERE status <> 'Cancelled' AND %s < check_out AND check_in < %s",
+                  (ci, co))
         taken = set()
-        for row in c.execute(
-                "SELECT room FROM bookings WHERE status!='Cancelled' AND ?<check_out AND check_in<?", (ci, co)):
+        for row in c.fetchall():
             taken |= room_set(row["room"])
         busy = [r for r in picked if r in taken]
         if busy:
             return err(", ".join(busy) + " already booked for those dates.", 409)
         bid = "B" + str(int(datetime.now().timestamp() * 1000))
         c.execute("INSERT INTO bookings (id, booking_date, guest, phone, room, check_in, check_out, "
-                  "amount, advance, source, status, log, trekking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  "amount, advance, source, status, log, trekking) "
+                  "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                   (bid, bd, guest, str(d.get("phone", ""))[:30], room, ci, co,
-                   amount, advance, source, "Confirmed", "[]", 1 if d.get("trekking") else 0))
+                   amount, advance, source, "Confirmed", Json([]), bool(d.get("trekking"))))
     return jsonify({"id": bid}), 201
 
 
@@ -208,7 +244,8 @@ def edit_booking(bid):
         return err("Enter a valid amount.")
     reason = str(d.get("reason", "")).strip()[:200]
     with db() as c:
-        b = c.execute("SELECT * FROM bookings WHERE id=?", (bid,)).fetchone()
+        c.execute("SELECT * FROM bookings WHERE id=%s FOR UPDATE", (bid,))
+        b = c.fetchone()
         if not b:
             return err("Booking not found.", 404)
         if amount < 0:
@@ -221,11 +258,11 @@ def edit_booking(bid):
         trek_note = ""
         if trek != bool(b["trekking"]):
             trek_note = " · Trekking " + ("added" if trek else "removed")
-        log = json.loads(b["log"] or "[]")
+        log = list(b["log"] or [])
         log.append(f"{datetime.now():%d/%m/%Y, %H:%M} · {session['role']} · Amount ₹{b['amount']:g} → ₹{amount:g}, "
                    f"Advance ₹{b['advance']:g} → ₹{advance:g}" + trek_note + (f" · {reason}" if reason else ""))
-        c.execute("UPDATE bookings SET amount=?, advance=?, trekking=?, log=? WHERE id=?",
-                  (amount, advance, 1 if trek else 0, json.dumps(log), bid))
+        c.execute("UPDATE bookings SET amount=%s, advance=%s, trekking=%s, log=%s WHERE id=%s",
+                  (amount, advance, trek, Json(log), bid))
     return jsonify({"ok": True})
 
 
@@ -234,7 +271,7 @@ def cancel_booking(bid):
     if not allowed("cancel"):
         return err("You are not allowed to cancel bookings.", 403)
     with db() as c:
-        c.execute("UPDATE bookings SET status='Cancelled' WHERE id=?", (bid,))
+        c.execute("UPDATE bookings SET status='Cancelled' WHERE id=%s", (bid,))
     return jsonify({"ok": True})
 
 
@@ -249,7 +286,8 @@ def record_payment(bid):
         return err("Enter the amount received.")
     note = str(d.get("note", "")).strip()[:100]
     with db() as c:
-        b = c.execute("SELECT * FROM bookings WHERE id=?", (bid,)).fetchone()
+        c.execute("SELECT * FROM bookings WHERE id=%s FOR UPDATE", (bid,))
+        b = c.fetchone()
         if not b:
             return err("Booking not found.", 404)
         if b["status"] == "Cancelled":
@@ -257,14 +295,15 @@ def record_payment(bid):
         balance = b["amount"]
         if pay <= 0 or pay > balance:
             return err("Payment must be more than 0 and not more than the balance.")
-        log = json.loads(b["log"] or "[]")
+        log = list(b["log"] or [])
         log.append(f"{datetime.now():%d/%m/%Y, %H:%M} · {session['role']} · Payment ₹{pay:g} received, "
                    f"balance ₹{balance:g} → ₹{balance - pay:g}" + (f" · {note}" if note else ""))
-        c.execute("UPDATE bookings SET amount=?, advance=?, log=? WHERE id=?", (balance - pay, b["advance"] + pay, json.dumps(log), bid))
+        c.execute("UPDATE bookings SET amount=%s, advance=%s, log=%s WHERE id=%s",
+                  (balance - pay, b["advance"] + pay, Json(log), bid))
     return jsonify({"ok": True})
 
 
 init_db()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)

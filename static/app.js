@@ -12,7 +12,7 @@ var KEY = "resort_bookings_v1";
 var TABS = [["Home","Dashboard"],["New booking","New booking"],["Calendar","Room calendar"],["Reports","Reports"]];
 var bookings = [], tab = "Home", period = "7", msg = "";
 var role = null, editId = null, payId = null;
-var resortName = "Sunrise Resort", nameEdit = false, rateEdit = false;
+var resortName = "Yellamalai O'Valley Resort", nameEdit = false, rateEdit = false;
 var perms = {}, rates = {};
 
 async function api(path, method, body){
@@ -225,8 +225,8 @@ async function logout(){
 function can(a){ return role === "Owner" || (role === "Staff" && perms[a]); }
 function visibleTabs(){ return TABS.filter(function(t){ return t[0] !== "Reports" || can("reports"); }); }
 function roleBar(){
-  var h = '<div class="lb" style="border-top:0;padding-top:0;flex-direction:column;align-items:stretch;gap:10px"><span>Signed in as <b style="color:var(--ink)">' + role + '</b></span><span style="display:flex;gap:8px;flex-wrap:wrap">' + (role === "Owner" ? '<button class="mini" onclick="toggleName()">Resort name</button><button class="mini" onclick="toggleRates()">Rate</button>' : '') + '<button class="mini" onclick="logout()">Sign out</button></span></div>';
-  if (role === "Owner" && nameEdit) h += '<div class="card"><label>Resort name<input id="rname" value="' + esc(resortName) + '"></label><div style="display:flex;gap:12px"><button class="btn" onclick="saveName()">SAVE NAME</button><button class="btn out" onclick="toggleName()">CLOSE</button></div></div>';
+  var h = '<div class="lb" style="border-top:0;padding-top:0;flex-direction:column;align-items:stretch;gap:10px"><span>Signed in as <b style="color:var(--ink)">' + role + '</b></span><span style="display:flex;gap:8px;flex-wrap:wrap">' + (can("editName") ? '<button class="mini" onclick="toggleName()">Resort name</button>' : '') + (role === "Owner" ? '<button class="mini" onclick="toggleRates()">Rate</button>' : '') + '<button class="mini" onclick="logout()">Sign out</button></span></div>';
+  if (can("editName") && nameEdit) h += '<div class="card"><label>Resort name<input id="rname" value="' + esc(resortName) + '"></label><div style="display:flex;gap:12px"><button class="btn" onclick="saveName()">SAVE NAME</button><button class="btn out" onclick="toggleName()">CLOSE</button></div></div>';
   if (role === "Owner" && rateEdit) h += '<div class="card"><h2>Rate per night (all 4 rooms)</h2><label>Rate<input id="rate_all" type="number" min="0" value="' + (rateNow() || "") + '" placeholder="Rate per night"></label><div style="display:flex;gap:12px"><button class="btn" onclick="saveRates()">SAVE RATE</button><button class="btn out" onclick="toggleRates()">CLOSE</button></div></div>';
   return h;
 }
@@ -239,9 +239,9 @@ async function saveRates(){
     rates = s.room_rates; rateEdit = false; render();
   } catch(e){ alert(e.message); }
 }
-function toggleName(){ if (role !== "Owner") return; nameEdit = !nameEdit; render(); }
+function toggleName(){ if (!can("editName")) return; nameEdit = !nameEdit; render(); }
 async function saveName(){
-  if (role !== "Owner") return;
+  if (!can("editName")) return;
   var v = document.getElementById("rname").value.trim();
   if (!v) return;
   try {
