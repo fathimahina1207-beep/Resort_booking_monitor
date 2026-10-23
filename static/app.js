@@ -14,6 +14,7 @@ var bookings = [], tab = "Home", period = "7", msg = "";
 var role = null, editId = null, payId = null;
 var resortName = "Yellamalai O'Valley Resort", nameEdit = false, rateEdit = false, pinEdit = false;
 var perms = {}, rates = {};
+var roomPick = ROOMS.slice();
 
 async function api(path, method, body){
   var r = await fetch(path, { method: method || "GET", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
@@ -86,13 +87,14 @@ function home(){
 }
 
 function formView(){
+  roomPick = ROOMS.slice();
   setTimeout(calcAmount, 0);
   var opt = function(arr){ return arr.map(function(x){ return '<option>' + x + '</option>'; }).join(""); };
   return '<label>Guest name<input id="guest" placeholder="Guest name"></label>' +
     '<label>Phone<input id="phone" type="tel" placeholder="Phone"></label>' +
     '<label>Check-in date<input id="ci" onchange="calcAmount()" type="date" value="' + today() + '"></label>' +
     '<label>Check-out date<input id="co" onchange="calcAmount()" type="date" value="' + addDays(today(),1) + '"></label>' +
-    '<label style="margin-bottom:6px">Rooms for this family</label><div class="rooms">' + ROOMS.map(function(r){ return '<label><input type="checkbox" class="rm" value="' + r + '" checked> ' + r + '</label>'; }).join("") + '</div>' +
+    '<label style="margin-bottom:6px">Rooms for this family</label><div class="chips" id="roomChips" style="margin-bottom:6px">' + roomChipsHtml() + '</div><div class="empty" id="roomNote" style="margin-bottom:12px">' + roomNoteText() + '</div>' +
     '<label>Source<select id="src">' + opt(SOURCES) + '</select></label>' +
     '<label style="flex-direction:row;align-items:center;gap:10px;text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)"><input id="trek" type="checkbox" onchange="calcAmount()" style="width:22px;height:22px"> Trekking add-on (+' + money(TREKKING_COST) + ')</label>' +
     '<label>Amount (auto, after advance)<input id="amt" type="text" inputmode="numeric" readonly tabindex="-1" placeholder="Auto"></label>' +
@@ -100,11 +102,27 @@ function formView(){
     '<div class="empty" id="rateNote" style="margin-bottom:8px"></div><div class="err" id="err"></div><button class="btn" onclick="addB()">CONFIRM BOOKING</button>';
 }
 
+function roomChipsHtml(){
+  var all = roomPick.length === ROOMS.length;
+  return '<button type="button" class="chip' + (all ? " on" : "") + '" onclick="pickRoom(\'ALL\')">All rooms</button>' +
+    ROOMS.map(function(r){ return '<button type="button" class="chip' + (roomPick.indexOf(r) >= 0 ? " on" : "") + '" onclick="pickRoom(\'' + r + '\')">' + r + '</button>'; }).join("");
+}
+function roomNoteText(){
+  var p = ROOMS.filter(function(r){ return roomPick.indexOf(r) >= 0; });
+  return p.length ? p.join(", ") + " · " + p.length + (p.length === 1 ? " room" : " rooms") : "Pick at least one room.";
+}
+function pickRoom(r){
+  if (r === "ALL") roomPick = roomPick.length === ROOMS.length ? [] : ROOMS.slice();
+  else { var i = roomPick.indexOf(r); if (i >= 0) roomPick.splice(i, 1); else roomPick.push(r); }
+  document.getElementById("roomChips").innerHTML = roomChipsHtml();
+  document.getElementById("roomNote").textContent = roomNoteText();
+}
+
 async function addB(){
   var g = document.getElementById("guest").value.trim();
   var ci = document.getElementById("ci").value, co = document.getElementById("co").value;
   var src = document.getElementById("src").value;
-  var picked = Array.prototype.map.call(document.querySelectorAll(".rm:checked"), function(x){ return x.value; });
+  var picked = ROOMS.filter(function(r){ return roomPick.indexOf(r) >= 0; });
   var amt = Number(document.getElementById("amt").value), adv = Number(document.getElementById("adv").value) || 0;
   var err = document.getElementById("err");
   if (!g) { err.textContent = "Enter the guest name."; return; }
