@@ -12,7 +12,7 @@ var KEY = "resort_bookings_v1";
 var TABS = [["Home","Dashboard"],["New booking","New booking"],["Calendar","Room calendar"],["Reports","Reports"]];
 var bookings = [], tab = "Home", period = "7", msg = "";
 var role = null, editId = null, payId = null;
-var resortName = "Yellamalai O'Valley Resort", nameEdit = false, rateEdit = false;
+var resortName = "Yellamalai O'Valley Resort", nameEdit = false, rateEdit = false, pinEdit = false;
 var perms = {}, rates = {};
 
 async function api(path, method, body){
@@ -225,10 +225,25 @@ async function logout(){
 function can(a){ return role === "Owner" || (role === "Staff" && perms[a]); }
 function visibleTabs(){ return TABS.filter(function(t){ return t[0] !== "Reports" || can("reports"); }); }
 function roleBar(){
-  var h = '<div class="lb" style="border-top:0;padding-top:0;flex-direction:column;align-items:stretch;gap:10px"><span>Signed in as <b style="color:var(--ink)">' + role + '</b></span><span style="display:flex;gap:8px;flex-wrap:wrap">' + (can("editName") ? '<button class="mini" onclick="toggleName()">Resort name</button>' : '') + (role === "Owner" ? '<button class="mini" onclick="toggleRates()">Rate</button>' : '') + '<button class="mini" onclick="logout()">Sign out</button></span></div>';
+  var h = '<div class="lb" style="border-top:0;padding-top:0;flex-direction:column;align-items:stretch;gap:10px"><span>Signed in as <b style="color:var(--ink)">' + role + '</b></span><span style="display:flex;gap:8px;flex-wrap:wrap">' + (can("editName") ? '<button class="mini" onclick="toggleName()">Resort name</button>' : '') + (role === "Owner" ? '<button class="mini" onclick="toggleRates()">Rate</button><button class="mini" onclick="togglePin()">Change PIN</button>' : '') + '<button class="mini" onclick="logout()">Sign out</button></span></div>';
   if (can("editName") && nameEdit) h += '<div class="card"><label>Resort name<input id="rname" value="' + esc(resortName) + '"></label><div style="display:flex;gap:12px"><button class="btn" onclick="saveName()">SAVE NAME</button><button class="btn out" onclick="toggleName()">CLOSE</button></div></div>';
   if (role === "Owner" && rateEdit) h += '<div class="card"><h2>Rate per night (all 4 rooms)</h2><label>Rate<input id="rate_all" type="number" min="0" value="' + (rateNow() || "") + '" placeholder="Rate per night"></label><div style="display:flex;gap:12px"><button class="btn" onclick="saveRates()">SAVE RATE</button><button class="btn out" onclick="toggleRates()">CLOSE</button></div></div>';
+  if (role === "Owner" && pinEdit) h += '<div class="card"><h2>Change PIN</h2><label>Change PIN for<select id="pwho"><option>Staff</option><option>Owner</option></select></label><label>Your current Owner PIN<input id="pcur" type="password" inputmode="numeric" autocomplete="off" placeholder="Current Owner PIN"></label><label>New PIN (4 to 8 digits)<input id="pnew" type="password" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="New PIN"></label><label>Repeat new PIN<input id="pnew2" type="password" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="Repeat new PIN"></label><div class="err" id="perr"></div><div style="display:flex;gap:12px"><button class="btn" onclick="savePin()">SAVE PIN</button><button class="btn out" onclick="togglePin()">CLOSE</button></div></div>';
   return h;
+}
+function togglePin(){ if (role !== "Owner") return; pinEdit = !pinEdit; render(); }
+async function savePin(){
+  if (role !== "Owner") return;
+  var who = document.getElementById("pwho").value, cur = document.getElementById("pcur").value.trim();
+  var np = document.getElementById("pnew").value.trim(), np2 = document.getElementById("pnew2").value.trim();
+  var e = document.getElementById("perr");
+  if (!cur) { e.textContent = "Enter your current Owner PIN."; return; }
+  if (!/^\d{4,8}$/.test(np)) { e.textContent = "New PIN must be 4 to 8 digits."; return; }
+  if (np !== np2) { e.textContent = "The two new PINs do not match."; return; }
+  try {
+    await api("/api/pins", "POST", { role: who, currentPin: cur, newPin: np });
+    pinEdit = false; render(); alert(who + " PIN changed.");
+  } catch(ex){ e.textContent = ex.message; }
 }
 function toggleRates(){ if (role !== "Owner") return; rateEdit = !rateEdit; render(); }
 async function saveRates(){

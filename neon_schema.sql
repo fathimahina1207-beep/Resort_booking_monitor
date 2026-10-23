@@ -40,3 +40,5 @@ ON CONFLICT (key) DO NOTHING;
 -- Set the nightly rate for all rooms:
 --   INSERT INTO settings (key, value) VALUES ('room_rates', '{"ALL": 3000}')
 --   ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+-- Reset PINs back to the OWNER_PIN / STAFF_PIN environment values (forgot PIN):
+--   DELETE FROM settings WHERE key IN ('owner_pin_hash','staff_pin_hash');

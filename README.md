@@ -22,7 +22,8 @@ Run
 Deploy: `gunicorn app:app` with the same settings configured as environment variables.
 
 Change
-- PINs: environment variables OWNER_PIN and STAFF_PIN.
+- PINs: the Owner can change the Owner or Staff PIN in the app (Home > Change PIN, 4 to 8 digits). PINs saved there are stored hashed in Neon and replace OWNER_PIN / STAFF_PIN.
+- Forgot the Owner PIN? Run in Neon SQL Editor: `DELETE FROM settings WHERE key IN ('owner_pin_hash','staff_pin_hash');` The PINs in OWNER_PIN / STAFF_PIN work again.
 - Permissions: `STAFF_CAN` near the top of app.py. `editName` lets that role change the resort name (Owner can by default: Home > Resort name).
 - Rooms and booking sources: `ROOMS` and `SOURCES` at the top of static/app.js.
 - Data lives in Neon (backups: Neon branches / point-in-time restore). No local .db file is used any more.

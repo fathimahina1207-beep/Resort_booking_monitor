@@ -17,9 +17,10 @@ import psycopg2
 from psycopg2.extras import Json, RealDictCursor
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory, session
+from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(BASE, ".env"))
+load_dotenv(os.path.join(BASE, ".env"), override=True)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 if not DATABASE_URL:
@@ -46,6 +47,8 @@ app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret-key")
 ROOMS = ["R101", "R102", "R103", "R104"]
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+PIN_RE = re.compile(r"^\d{4,8}$")
+PIN_KEYS = {"Owner": "owner_pin_hash", "Staff": "staff_pin_hash"}
 
 
 @contextmanager
@@ -105,6 +108,19 @@ def allowed(action):
     return bool(p and p.get(action))
 
 
+def pin_ok(role, pin):
+    """PIN saved in the database (changed inside the app) wins; otherwise the OWNER_PIN / STAFF_PIN setting."""
+    if role not in PIN_KEYS:
+        return False
+    with db() as c:
+        c.execute("SELECT value FROM settings WHERE key=%s", (PIN_KEYS[role],))
+        row = c.fetchone()
+    if row:
+        return check_password_hash(row["value"], pin)
+    expected = {"Owner": OWNER_PIN, "Staff": STAFF_PIN}[role]
+    return secrets.compare_digest(pin.encode(), expected.encode())
+
+
 @app.get("/")
 def home():
     return send_from_directory(BASE, "index.html")
@@ -114,11 +130,32 @@ def home():
 def login():
     data = request.get_json(silent=True) or {}
     role, pin = data.get("role"), str(data.get("pin", ""))
-    expected = {"Owner": OWNER_PIN, "Staff": STAFF_PIN}.get(role)
-    if expected is None or not secrets.compare_digest(pin, expected):
+    if not pin_ok(role, pin):
         return err("Wrong PIN.", 401)
     session["role"] = role
     return jsonify({"role": role, "can": permissions()})
+
+
+@app.post("/api/pins")
+def change_pin():
+    if session.get("role") != "Owner":
+        return err("Only the owner can change PINs.", 403)
+    d = request.get_json(silent=True) or {}
+    target, current, new = d.get("role"), str(d.get("currentPin", "")), str(d.get("newPin", ""))
+    if target not in PIN_KEYS:
+        return err("Choose Owner or Staff.")
+    if not pin_ok("Owner", current):
+        return err("Your current Owner PIN is wrong.", 401)
+    if not PIN_RE.match(new):
+        return err("New PIN must be 4 to 8 digits.")
+    other = "Staff" if target == "Owner" else "Owner"
+    if pin_ok(other, new):
+        return err("Owner and Staff PINs must be different.")
+    with db() as c:
+        c.execute("INSERT INTO settings (key, value) VALUES (%s, %s) "
+                  "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                  (PIN_KEYS[target], generate_password_hash(new)))
+    return jsonify({"ok": True})
 
 
 @app.post("/api/logout")
