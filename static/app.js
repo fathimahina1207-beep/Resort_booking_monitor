@@ -95,7 +95,7 @@ function formView(){
     '<label style="margin-bottom:6px">Rooms for this family</label><div class="rooms">' + ROOMS.map(function(r){ return '<label><input type="checkbox" class="rm" value="' + r + '" checked> ' + r + '</label>'; }).join("") + '</div>' +
     '<label>Source<select id="src">' + opt(SOURCES) + '</select></label>' +
     '<label style="flex-direction:row;align-items:center;gap:10px;text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)"><input id="trek" type="checkbox" onchange="calcAmount()" style="width:22px;height:22px"> Trekking add-on (+' + money(TREKKING_COST) + ')</label>' +
-    '<label>Amount (after advance)<input id="amt" type="number" min="0" placeholder="Amount"></label>' +
+    '<label>Amount (auto, after advance)<input id="amt" type="text" inputmode="numeric" readonly tabindex="-1" placeholder="Auto"></label>' +
     '<label>Advance paid<input id="adv" oninput="calcAmount()" type="number" min="0" placeholder="Advance paid"></label>' +
     '<div class="empty" id="rateNote" style="margin-bottom:8px"></div><div class="err" id="err"></div><button class="btn" onclick="addB()">CONFIRM BOOKING</button>';
 }
@@ -347,7 +347,14 @@ function calcAmount(){
   var rate = rateNow();
   var trek = document.getElementById("trek") && document.getElementById("trek").checked ? TREKKING_COST : 0;
   var nights = Math.round((new Date(co.value + "T00:00:00") - new Date(ci.value + "T00:00:00")) / 86400000);
-  if (!rate || !(nights > 0)) { note.textContent = rate ? "" : "No rate set. Enter the amount yourself" + (trek ? " (include trekking " + money(trek) + ")" : "") + "."; return; }
+  var amtEl = document.getElementById("amt");
+  amtEl.readOnly = !!rate || role !== "Owner";
+  if (!rate || !(nights > 0)) {
+    if (rate) { amtEl.value = ""; note.textContent = ""; }
+    else if (role === "Owner") note.textContent = "No rate set. Set it under Rate, or enter the amount yourself" + (trek ? " (include trekking " + money(trek) + ")" : "") + ".";
+    else note.textContent = "The rate is not set. Ask the owner to set it.";
+    return;
+  }
   var adv = Number(document.getElementById("adv").value) || 0, total = rate * nights + trek;
   document.getElementById("amt").value = Math.max(0, total - adv);
   note.textContent = "Rate " + money(rate) + " x " + nights + " night" + (nights > 1 ? "s" : "") + (trek ? " + trekking " + money(trek) : "") + " = " + money(total) + ". Amount = total minus advance.";

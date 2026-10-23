@@ -66,3 +66,5 @@ textarea{width:100%;height:100px;border:1px solid var(--line);border-radius:12px
 .rooms{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .rooms label{flex-direction:row;align-items:center;gap:8px;margin:0;padding:10px 12px;border:1px solid var(--line);border-radius:12px;text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink);cursor:pointer}
 .rooms input{width:18px;height:18px}
+input[readonly]{border-style:dashed;color:var(--gold);cursor:default}
+input[readonly]:focus{outline:none}

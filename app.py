@@ -10,7 +10,7 @@ import os
 import re
 import secrets
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 from urllib.parse import urlsplit
 
 import psycopg2
@@ -46,6 +46,7 @@ OWNER_CAN = {"editAmount": True, "recordPayment": True, "cancel": True, "reports
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret-key")
 ROOMS = ["R101", "R102", "R103", "R104"]
+TREKKING_COST = 1000
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PIN_RE = re.compile(r"^\d{4,8}$")
 PIN_KEYS = {"Owner": "owner_pin_hash", "Staff": "staff_pin_hash"}
@@ -179,6 +180,11 @@ def read_settings():
             "room_rates": json.loads(rows.get("room_rates", "{}"))}
 
 
+def current_rate():
+    rates = read_settings()["room_rates"]
+    return float(rates.get("ALL") or rates.get("R101") or 0)
+
+
 @app.get("/api/settings")
 def get_settings():
     return jsonify(read_settings())
@@ -249,7 +255,21 @@ def add_booking():
         return err("Check-out must be after check-in.")
     if not DATE_RE.match(str(bd)):
         bd = datetime.now().strftime("%Y-%m-%d")
-    if amount < 0 or advance < 0 or amount + advance <= 0:
+    if advance < 0:
+        return err("Advance cannot be negative.")
+    rate = current_rate()
+    if rate:  # amount is always calculated here, nobody types it
+        try:
+            nights = (date.fromisoformat(co) - date.fromisoformat(ci)).days
+        except ValueError:
+            return err("Enter valid dates.")
+        total = rate * nights + (TREKKING_COST if d.get("trekking") else 0)
+        if advance > total:
+            return err("Advance cannot be more than the total.")
+        amount = total - advance
+    elif session.get("role") != "Owner":
+        return err("The rate is not set. Ask the owner to set it.")
+    if amount < 0 or amount + advance <= 0:
         return err("Check the amount and advance.")
     with db() as c:
         c.execute("SELECT pg_advisory_xact_lock(727001)")  # stops two phones double-booking at once
